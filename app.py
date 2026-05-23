@@ -1,202 +1,408 @@
-import streamlit as st
-import google.generativeai as genai
-import pypdf
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_community.vectorstores import FAISS
+"""
+AI Learning Assistant - Main Flask Application
+Integrates all modules: Q&A System, Study Planner, Quiz Generator, and RAG Assistant
+"""
 
-# ==========================================
-# MINGGU 1 & 6: KONFIGURASI HALAMAN & API
-# ==========================================
-st.set_page_config(page_title="AI Learning Companion", page_icon="📚", layout="wide")
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
+from werkzeug.utils import secure_filename
+import os
+import logging
+from datetime import datetime
+import json
 
-# Inisialisasi Session State agar database RAG tidak hilang saat halaman di-refresh
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
-if "current_file" not in st.session_state:
-    st.session_state.current_file = None
+from config import Config, config
+from modules.qa_system import QASystem
+from modules.study_planner import StudyPlanGenerator
+from modules.quiz_generator import QuizGenerator
+from modules.rag_assistant import RAGLearningAssistant
 
-# Masukkan API Key Gemini milikmu di sini
-GEMINI_API_KEY = "AIzaSyAEB-ZNzgeFNGfnTybwaBhcbGGnldLzRM4"
-genai.configure(api_key=GEMINI_API_KEY)
+# Initialize logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-st.title("📚 AI-Powered Smart Learning Companion")
-st.markdown("Platform pembelajaran adaptif dan personal dengan bantuan AI.")
+# Initialize Flask app
+app = Flask(__name__)
+app.config.from_object(config[os.getenv('FLASK_ENV', 'default')])
 
-# Navigasi Sidebar
-menu = st.sidebar.selectbox(
-    "Pilih Mode Belajar:",
-    [
-        "Ask Anything (Q&A)", 
-        "Study Plan Generator", 
-        "Interactive Quiz", 
-        "RAG Document Assistant"
-    ]
-)
+# Ensure upload folder exists
+os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 
-# ==========================================
-# MINGGU 2: ASK ANYTHING (Q&A SYSTEM)
-# ==========================================
-if menu == "Ask Anything (Q&A)":
-    st.header("💬 Ask Anything")
-    st.write("Tanyakan konsep apapun, dan AI akan merangkumkannya untukmu dalam bentuk poin-poin terstruktur.")
-    
-    user_question = st.text_input("Apa yang ingin kamu pelajari hari ini?", key="qna_input")
-    
-    if st.button("Tanya AI", key="qna_button"):
-        if user_question:
-            with st.spinner("Mencari jawaban terbaik..."):
-                try:
-                    model = genai.GenerativeModel('gemini-flash-lite-latest')
-                    prompt = f"Jawab pertanyaan berikut secara edukatif, jelas, dan mendalam. Wajib gunakan format bullet points untuk poin-poin utamanya: {user_question}"
-                    
-                    response = model.generate_content(prompt)
-                    st.success("Selesai!")
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"Terjadi kesalahan pada API: {e}")
-        else:
-            st.warning("Silakan masukkan pertanyaan terlebih dahulu.")
+# Initialize AI modules
+try:
+    qa_system = QASystem()
+    study_planner = StudyPlanGenerator()
+    quiz_generator = QuizGenerator()
+    rag_assistant = RAGLearningAssistant()
+    logger.info("All AI modules initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing AI modules: {str(e)}")
+    qa_system = study_planner = quiz_generator = rag_assistant = None
 
-# ==========================================
-# MINGGU 3: PERSONALIZED STUDY PLAN GENERATOR
-# ==========================================
-elif menu == "Study Plan Generator":
-    st.header("📅 Personalized Study Plan Generator")
-    st.write("Buat roadmap belajar harian yang terstruktur berdasarkan target dan durasi waktumu.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        subject = st.text_input("Topik atau Mata Kuliah:", placeholder="Contoh: Pemrograman Python, Basis Data", key="sp_subject")
-    with col2:
-        timeline = st.number_input("Durasi Belajar (Hari):", min_value=1, max_value=90, value=7, key="sp_timeline")
+# HTML Templates
+MAIN_TEMPLATE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AI Learning Assistant</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
+        h1 { color: #333; text-align: center; margin-bottom: 30px; font-size: 2.5em; }
+        .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin: 30px 0; }
+        .feature-card { background: #f8f9fa; padding: 25px; border-radius: 10px; border-left: 5px solid #667eea; transition: transform 0.3s; }
+        .feature-card:hover { transform: translateY(-5px); box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
+        .feature-card h3 { color: #667eea; margin-top: 0; font-size: 1.3em; }
+        .feature-card p { color: #666; line-height: 1.6; }
+        .api-endpoints { background: #e8f4f8; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .endpoint { background: white; margin: 10px 0; padding: 15px; border-radius: 5px; border-left: 4px solid #17a2b8; }
+        .method { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: bold; color: white; font-size: 0.8em; }
+        .get { background: #28a745; }
+        .post { background: #007bff; }
+        .status { background: #d4edda; border: 1px solid #c3e6cb; color: #155724; padding: 15px; border-radius: 5px; margin: 20px 0; }
+        .milestone { background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 8px; margin: 10px 0; }
+        .milestone h4 { color: #856404; margin: 0 0 10px 0; }
+        .milestone ul { margin: 10px 0; padding-left: 20px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 AI Learning Assistant</h1>
         
-    goals = st.text_area("Tujuan Akhir / Target Capaian:", placeholder="Contoh: Paham konsep dasarnya dan bisa membuat proyek simpel sendiri", key="sp_goals")
-    
-    if st.button("Buat Rencana Belajar", key="sp_button"):
-        if subject and goals:
-            with st.spinner("Menyusun roadmap belajar harian..."):
-                try:
-                    model = genai.GenerativeModel('gemini-flash-lite-latest')
-                    prompt = f"""
-                    Bertindaklah sebagai penasihat akademik yang ahli. Buatlah rencana belajar harian (day-wise roadmap) selama {timeline} hari untuk mempelajari '{subject}'.
-                    Target akhir siswa adalah: {goals}.
-                    Berikan jadwal yang realistis, terstruktur per hari, beserta rekomendasi aktivitas atau latihan di setiap harinya.
-                    """
-                    
-                    response = model.generate_content(prompt)
-                    st.success("Rencana Belajar Berhasil Dibuat!")
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"Terjadi kesalahan pada API: {e}")
-        else:
-            st.warning("Harap isi kolom topik dan tujuan akhir terlebih dahulu.")
+        <div class="status">
+            <h3>🟢 System Status: Operational</h3>
+            <p>All AI modules are running successfully. Your learning assistant is ready to help!</p>
+        </div>
 
-# ==========================================
-# MINGGU 4: INTERACTIVE QUIZ GENERATOR
-# ==========================================
-elif menu == "Interactive Quiz":
-    st.header("📝 Interactive Quiz Generator")
-    st.write("Uji pemahaman belajarmu dengan kuis pilihan ganda dinamis yang dibuat langsung oleh AI.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        quiz_topic = st.text_input("Topik Kuis:", placeholder="Contoh: Pemrograman Berorientasi Objek", key="quiz_topic")
-    with col2:
-        difficulty = st.selectbox("Tingkat Kesulitan:", ["Mudah", "Sedang", "Sulit"], key="quiz_diff")
-        
-    num_questions = st.slider("Jumlah Soal:", min_value=1, max_value=10, value=3, key="quiz_num")
-    
-    if st.button("Generate Kuis", key="quiz_button"):
-        if quiz_topic:
-            with st.spinner("Membuat soal kuis..."):
-                try:
-                    model = genai.GenerativeModel('gemini-flash-lite-latest')
-                    prompt = f"""
-                    Buatlah {num_questions} soal pilihan ganda (Multiple Choice Questions) dengan tingkat kesulitan '{difficulty}' tentang topik '{quiz_topic}'.
-                    Format penampilan:
-                    - Tampilkan soal beserta opsi pilihan (A, B, C, D) terlebih dahulu.
-                    - Di bagian paling bawah, berikan pemisah yang jelas (misalnya: --- KUNCI JAWABAN ---) lalu tampilkan kunci jawaban beserta penjelasan singkat mengapa jawaban tersebut benar.
-                    """
-                    
-                    response = model.generate_content(prompt)
-                    st.success("Kuis Berhasil Dibuat!")
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"Terjadi kesalahan pada API: {e}")
-        else:
-            st.warning("Harap masukkan topik kuis terlebih dahulu.")
+        <div class="feature-grid">
+            <div class="feature-card">
+                <h3>📚 Ask Anything (Q&A System)</h3>
+                <p>Get instant answers to any question with structured bullet points. Powered by OpenAI and Google Gemini APIs for comprehensive responses.</p>
+                <strong>Endpoint:</strong> <code>POST /api/ask</code>
+            </div>
 
-# ==========================================
-# MINGGU 5: RAG-BASED LEARNING ASSISTANT
-# ==========================================
-elif menu == "RAG Document Assistant":
-    st.header("📄 Document-based Q&A (RAG)")
-    st.write("Unggah materi kuliah atau catatan dalam bentuk PDF, lalu ajukan pertanyaan langsung berbasis isi dokumen tersebut.")
-    
-    uploaded_file = st.file_uploader("Unggah file PDF materi belajar kamu:", type="pdf")
-    
-    # Cek apakah ada dokumen baru yang diunggah
-    if uploaded_file is not None:
-        if st.session_state.current_file != uploaded_file.name:
-            st.session_state.current_file = uploaded_file.name
+            <div class="feature-card">
+                <h3>📋 Personalized Study Plans</h3>
+                <p>Generate customized day-by-day learning roadmaps based on your goals, timeline, and preferred subjects. Smart scheduling with progress tracking.</p>
+                <strong>Endpoint:</strong> <code>POST /api/study-plan</code>
+            </div>
+
+            <div class="feature-card">
+                <h3>🎯 Interactive Quizzes</h3>
+                <p>Dynamic MCQ generation with adjustable difficulty levels. Test your knowledge and get detailed feedback on your performance.</p>
+                <strong>Endpoint:</strong> <code>POST /api/quiz/generate</code>
+            </div>
+
+            <div class="feature-card">
+                <h3>📄 Document-Based Q&A</h3>
+                <p>Upload PDFs, documents, and notes. Ask questions directly from your materials using advanced RAG technology with FAISS vector search.</p>
+                <strong>Endpoint:</strong> <code>POST /api/documents/upload</code>
+            </div>
+        </div>
+
+        <div class="api-endpoints">
+            <h3>🔗 Available API Endpoints</h3>
             
-            # 1. Ekstraksi teks dari dokumen PDF
-            with st.spinner("Membaca dokumen PDF..."):
-                pdf_reader = pypdf.PdfReader(uploaded_file)
-                text_content = ""
-                for page in pdf_reader.pages:
-                    extracted_text = page.extract_text()
-                    if extracted_text:
-                        text_content += extracted_text
+            <div class="endpoint">
+                <span class="method get">GET</span>
+                <strong>/health</strong> - System health check
+            </div>
             
-            if text_content:
-                # 2. Memecah dokumen menjadi potongan kecil (Text Chunking)
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000,
-                    chunk_overlap=200
-                )
-                chunks = text_splitter.split_text(text_content)
-                
-                # 3. Membuat Vector Embeddings menggunakan Hugging Face & disimpan ke FAISS
-                with st.spinner("Menghitung Vektor & Membangun Knowledge Base (FAISS)..."):
-                    # Menggunakan model embeddings open-source yang ringan dan akurat
-                    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-                    st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
-                st.success(f"Berhasil memproses dokumen: '{uploaded_file.name}'!")
-            else:
-                st.error("Gagal membaca dokumen. Pastikan file PDF kamu berisi teks, bukan gambar scan.")
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <strong>/api/ask</strong> - Ask any question
+                <br><small>Body: {"question": "your question", "context": "optional context"}</small>
+            </div>
+            
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <strong>/api/study-plan</strong> - Generate study plan
+                <br><small>Body: {"goals": "learning goals", "subjects": ["subject1", "subject2"], "timeline": 30, "daily_hours": 2}</small>
+            </div>
+            
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <strong>/api/quiz/generate</strong> - Create quiz
+                <br><small>Body: {"subject": "topic", "difficulty": "medium", "num_questions": 10}</small>
+            </div>
+            
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <strong>/api/documents/upload</strong> - Upload document for RAG
+                <br><small>Form data with file field</small>
+            </div>
+            
+            <div class="endpoint">
+                <span class="method post">POST</span>
+                <strong>/api/documents/ask</strong> - Ask question about documents
+                <br><small>Body: {"question": "your question", "document_ids": ["optional", "doc", "ids"]}</small>
+            </div>
+        </div>
 
-    # Bagian input pertanyaan jika database vektor sudah siap
-    if st.session_state.vector_store is not None:
-        st.markdown("---")
-        rag_question = st.text_input("Masukkan pertanyaan seputar isi dokumen:")
+        <div class="milestone">
+            <h4>🎯 Development Milestones Progress</h4>
+            <ul>
+                <li>✅ Milestone 1: Development environment setup</li>
+                <li>✅ Milestone 2: Q&A System implementation</li>
+                <li>✅ Milestone 3: Study Plan Generator</li>
+                <li>✅ Milestone 4: Interactive Quiz Generator</li>
+                <li>✅ Milestone 5: RAG-based Learning Assistant</li>
+                <li>🔄 Milestone 6: UI Development and Deployment (In Progress)</li>
+            </ul>
+        </div>
+
+        <div style="text-align: center; margin-top: 30px; color: #666;">
+            <p>🚀 Ready to start learning? Use the API endpoints above or integrate with your preferred frontend framework!</p>
+            <p><strong>Next Steps:</strong> Install dependencies with <code>pip install -r requirements.txt</code> and configure your API keys in <code>.env</code></p>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+# Routes
+@app.route('/')
+def home():
+    """Homepage with feature overview"""
+    try:
+        return render_template_string(MAIN_TEMPLATE)
+    except Exception as e:
+        logger.error(f"Error in home route: {str(e)}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/health')
+def health_check():
+    """System health check"""
+    try:
+        # Check API key configuration
+        missing_keys = Config.validate_api_keys()
         
-        if st.button("Cari Jawaban", key="rag_button"):
-            if rag_question:
-                with st.spinner("Melakukan similarity search & merumuskan jawaban..."):
-                    try:
-                        # 4. Melakukan pencarian potongan teks paling relevan (Top 3)
-                        relevant_docs = st.session_state.vector_store.similarity_search(rag_question, k=3)
-                        context_text = "\n\n".join([doc.page_content for doc in relevant_docs])
-                        
-                        # 5. Mengirimkan konteks dokumen bersama pertanyaan ke Gemini
-                        model = genai.GenerativeModel('gemini-flash-lite-latest')
-                        prompt = f"""
-                        Kamu adalah asisten akademik yang cerdas. Tugasmu adalah menjawab pertanyaan pengguna HANYA berdasarkan konteks dokumen yang disediakan di bawah ini.
-                        Jika jawabannya tidak ada di dalam dokumen, katakan secara jujur bahwa informasi tersebut tidak ditemukan di dalam dokumen. Jangan mengada-ada informasi.
-                        
-                        Konteks Dokumen:
-                        {context_text}
-                        
-                        Pertanyaan:
-                        {rag_question}
-                        """
-                        
-                        response = model.generate_content(prompt)
-                        st.markdown("### 💡 Jawaban Berdasarkan Dokumen:")
-                        st.info(response.text)
-                    except Exception as e:
-                        st.error(f"Terjadi kendala saat memproses jawaban: {e}")
-            else:
-                st.warning("Silakan ketik pertanyaan terlebih dahulu.")
+        # Check module status
+        modules_status = {
+            'qa_system': qa_system is not None,
+            'study_planner': study_planner is not None,
+            'quiz_generator': quiz_generator is not None,
+            'rag_assistant': rag_assistant is not None
+        }
+        
+        # Get RAG system status
+        rag_status = {}
+        if rag_assistant:
+            rag_status = rag_assistant.get_system_status()
+        
+        return jsonify({
+            "status": "healthy",
+            "message": "AI Learning Assistant is operational",
+            "timestamp": datetime.now().isoformat(),
+            "modules": modules_status,
+            "rag_system": rag_status,
+            "missing_api_keys": missing_keys,
+            "version": "1.0.0"
+        })
+    except Exception as e:
+        logger.error(f"Error in health check: {str(e)}")
+        return jsonify({"error": "Health check failed", "details": str(e)}), 500
+
+@app.route('/api/ask', methods=['POST'])
+def ask_question():
+    """Q&A System endpoint - Milestone 2"""
+    try:
+        if not qa_system:
+            return jsonify({"error": "Q&A system not available"}), 503
+        
+        data = request.get_json()
+        if not data or 'question' not in data:
+            return jsonify({"error": "Question is required"}), 400
+        
+        question = data.get('question', '').strip()
+        context = data.get('context', '')
+        provider = data.get('provider', 'auto')
+        
+        response = qa_system.ask_question(question, context, provider)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in ask endpoint: {str(e)}")
+        return jsonify({"error": "Failed to process question", "details": str(e)}), 500
+
+@app.route('/api/study-plan', methods=['POST'])
+def generate_study_plan():
+    """Study Plan Generator endpoint - Milestone 3"""
+    try:
+        if not study_planner:
+            return jsonify({"error": "Study planner not available"}), 503
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Request body is required"}), 400
+        
+        response = study_planner.generate_study_plan(data)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in study plan endpoint: {str(e)}")
+        return jsonify({"error": "Failed to generate study plan", "details": str(e)}), 500
+
+@app.route('/api/quiz/generate', methods=['POST'])
+def generate_quiz():
+    """Quiz Generator endpoint - Milestone 4"""
+    try:
+        if not quiz_generator:
+            return jsonify({"error": "Quiz generator not available"}), 503
+        
+        data = request.get_json()
+        if not data or 'subject' not in data:
+            return jsonify({"error": "Subject is required"}), 400
+        
+        response = quiz_generator.generate_quiz(data)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in quiz generation endpoint: {str(e)}")
+        return jsonify({"error": "Failed to generate quiz", "details": str(e)}), 500
+
+@app.route('/api/quiz/submit', methods=['POST'])
+def submit_quiz():
+    """Submit quiz answers for scoring"""
+    try:
+        if not quiz_generator:
+            return jsonify({"error": "Quiz generator not available"}), 503
+        
+        data = request.get_json()
+        if not data or 'quiz_id' not in data or 'answers' not in data:
+            return jsonify({"error": "Quiz ID and answers are required"}), 400
+        
+        quiz_id = data['quiz_id']
+        answers = data['answers']
+        
+        response = quiz_generator.submit_quiz(quiz_id, answers)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in quiz submission endpoint: {str(e)}")
+        return jsonify({"error": "Failed to submit quiz", "details": str(e)}), 500
+
+@app.route('/api/documents/upload', methods=['POST'])
+def upload_document():
+    """Document upload endpoint for RAG - Milestone 5"""
+    try:
+        if not rag_assistant:
+            return jsonify({"error": "RAG assistant not available"}), 503
+        
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+        
+        # Validate file type
+        if not file.filename.lower().endswith(('.pdf', '.txt', '.docx')):
+            return jsonify({"error": "Unsupported file format. Use PDF, TXT, or DOCX"}), 400
+        
+        # Save file securely
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(Config.UPLOAD_FOLDER, filename)
+        file.save(file_path)
+        
+        # Process document
+        response = rag_assistant.upload_document(file_path, filename)
+        
+        # Clean up uploaded file after processing
+        try:
+            os.remove(file_path)
+        except:
+            pass  # Ignore cleanup errors
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in document upload endpoint: {str(e)}")
+        return jsonify({"error": "Failed to upload document", "details": str(e)}), 500
+
+@app.route('/api/documents/ask', methods=['POST'])
+def ask_document_question():
+    """Ask questions about uploaded documents"""
+    try:
+        if not rag_assistant:
+            return jsonify({"error": "RAG assistant not available"}), 503
+        
+        data = request.get_json()
+        if not data or 'question' not in data:
+            return jsonify({"error": "Question is required"}), 400
+        
+        question = data.get('question', '').strip()
+        document_ids = data.get('document_ids', None)
+        top_k = data.get('top_k', 5)
+        
+        response = rag_assistant.ask_document_question(question, document_ids, top_k)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in document question endpoint: {str(e)}")
+        return jsonify({"error": "Failed to process document question", "details": str(e)}), 500
+
+@app.route('/api/documents', methods=['GET'])
+def get_documents():
+    """Get list of uploaded documents"""
+    try:
+        if not rag_assistant:
+            return jsonify({"error": "RAG assistant not available"}), 503
+        
+        documents = rag_assistant.get_uploaded_documents()
+        return jsonify({
+            "success": True,
+            "documents": documents,
+            "total_count": len(documents)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting documents: {str(e)}")
+        return jsonify({"error": "Failed to get documents", "details": str(e)}), 500
+
+@app.route('/api/documents/<document_id>', methods=['DELETE'])
+def delete_document(document_id):
+    """Delete a specific document"""
+    try:
+        if not rag_assistant:
+            return jsonify({"error": "RAG assistant not available"}), 503
+        
+        response = rag_assistant.delete_document(document_id)
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error deleting document: {str(e)}")
+        return jsonify({"error": "Failed to delete document", "details": str(e)}), 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal server error: {str(error)}")
+    return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(413)
+def file_too_large(error):
+    return jsonify({"error": "File too large. Maximum size is 16MB"}), 413
+
+if __name__ == '__main__':
+    try:
+        port = int(os.getenv('PORT', 5000))
+        debug = os.getenv('FLASK_ENV') == 'development'
+        
+        print(f"🚀 Starting AI Learning Assistant on port {port}")
+        print(f"🔧 Debug mode: {debug}")
+        print(f"📚 Visit http://localhost:{port} to get started")
+        
+        app.run(
+            host='0.0.0.0',
+            port=port,
+            debug=debug
+        )
+    except Exception as e:
+        logger.error(f"Failed to start application: {str(e)}")
+        print(f"❌ Error: {str(e)}")
