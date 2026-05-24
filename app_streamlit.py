@@ -126,8 +126,6 @@ def initialize_session_state():
         st.session_state.user_answers = {}
     if '_quiz_debug' not in st.session_state:
         st.session_state._quiz_debug = []
-    if '_quiz_debug' not in st.session_state:
-        st.session_state._quiz_debug = []
 
 def check_api_health():
     """Check if backend API is available"""
@@ -429,50 +427,27 @@ def render_quiz_generator():
                     
                     if st.button("Submit Quiz", use_container_width=True, type="primary"):
                         with st.spinner("Calculating score..."):
-                            correct = 0
-                            total = len(quiz['questions'])
-                            detailed_results = {}
-
-                            for q in quiz['questions']:
-                                user_answer = st.session_state.user_answers.get(str(q['question_number']))
-                                correct_raw = q.get('correct_answer')
-                                if isinstance(correct_raw, str) and correct_raw[:1].upper() in 'ABCD':
-                                    correct_answer = ord(correct_raw[:1].upper()) - ord('A')
-                                elif isinstance(correct_raw, int):
-                                    correct_answer = correct_raw
-                                else:
-                                    correct_letter = q.get('correct_letter', 'A')
-                                    correct_answer = ord(correct_letter[:1].upper()) - ord('A') if isinstance(correct_letter, str) and correct_letter[:1].upper() in 'ABCD' else 0
-
-                                is_correct = user_answer is not None and user_answer == correct_answer
-                                if is_correct:
-                                    correct += 1
-
-                                detailed_results[str(q['question_number'])] = {
-                                    'question_text': q['question_text'],
-                                    'selected': user_answer,
-                                    'correct': correct_answer,
-                                    'is_correct': is_correct,
-                                    'selected_text': q['options'][user_answer] if isinstance(user_answer, int) and 0 <= user_answer < len(q['options']) else None,
-                                    'correct_text': q['options'][correct_answer] if 0 <= correct_answer < len(q['options']) else None,
+                            try:
+                                submit_payload = {
+                                    "quiz_id": quiz['id'],
+                                    "answers": {
+                                        str(k): v
+                                        for k, v in st.session_state.user_answers.items()
+                                    }
                                 }
-
-                            percentage = (correct / total * 100) if total > 0 else 0
-                            
-                            results = {
-                                "score": {
-                                    "correct_answers": correct,
-                                    "total_questions": total,
-                                    "percentage": round(percentage, 1),
-                                    "grade": "A" if percentage >= 90 else "B" if percentage >= 80 else "C" if percentage >= 70 else "D",
-                                    "passed": percentage >= 60
-                                },
-                                "feedback": "Great job!" if percentage >= 80 else "Good effort, keep practicing!"
-                                ,"detailed_results": detailed_results
-                            }
-                            
-                            st.session_state.quiz_results = results
-                            st.rerun()
+                                sub_resp = requests.post(
+                                    f"{API_BASE_URL}/api/quiz/submit",
+                                    json=submit_payload,
+                                    timeout=30,
+                                )
+                                sub_resp.raise_for_status()
+                                sub_data = sub_resp.json()
+                                if not sub_data.get('success'):
+                                    raise ValueError(sub_data.get('error', 'Failed to submit quiz'))
+                                st.session_state.quiz_results = sub_data['results']
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error submitting quiz: {str(e)}")
                     
                 else:
                     st.error(f"Error: {quiz_data.get('error', 'Unknown error')}");
@@ -635,12 +610,14 @@ def render_settings():
     
     with st.form("api_settings"):
         gemini_key = st.text_input("Gemini API Key:", type="password")
+        openai_key = st.text_input("OpenAI API Key (Optional, fallback):", type="password")
         pinecone_key = st.text_input("Pinecone API Key (Optional):", type="password")
-        
+
         if st.form_submit_button("Save Configuration"):
             try:
                 payload = {
                     "gemini_api_key": gemini_key,
+                    "openai_api_key": openai_key,
                     "pinecone_api_key": pinecone_key
                 }
 
@@ -651,9 +628,11 @@ def render_settings():
                 if result.get("success"):
                     st.success("Configurations saved!")
                     if result.get("gemini_configured"):
-                        st.info("Gemini is now configured and ready to use.")
-                    else:
-                        st.warning("Gemini API key is empty. Q&A will not work until it is configured.")
+                        st.info("Gemini configured.")
+                    if result.get("openai_configured"):
+                        st.info("OpenAI configured (fallback).")
+                    if not result.get("gemini_configured") and not result.get("openai_configured"):
+                        st.warning("No AI provider configured. Q&A will not work.")
                 else:
                     st.error(result.get("error", "Failed to save configuration"))
 
