@@ -1,5 +1,11 @@
+flask
+werkzeug
+python-dotenv
+requests
+numpy
 streamlit
 google-generativeai
+openai
 pypdf
 pymupdf
 python-docx

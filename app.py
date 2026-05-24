@@ -274,13 +274,16 @@ def update_api_keys():
         data = request.get_json(silent=True) or {}
 
         gemini_api_key = data.get('gemini_api_key')
+        openai_api_key = data.get('openai_api_key')
         pinecone_api_key = data.get('pinecone_api_key')
 
         _set_env_value('GEMINI_API_KEY', gemini_api_key)
+        _set_env_value('OPENAI_API_KEY', openai_api_key)
         _set_env_value('PINECONE_API_KEY', pinecone_api_key)
 
         _persist_env_file({
             'GEMINI_API_KEY': gemini_api_key,
+            'OPENAI_API_KEY': openai_api_key,
             'PINECONE_API_KEY': pinecone_api_key,
         })
 
@@ -290,6 +293,7 @@ def update_api_keys():
             "success": True,
             "message": "API configuration saved successfully",
             "gemini_configured": bool(Config.GEMINI_API_KEY),
+            "openai_configured": bool(Config.OPENAI_API_KEY),
             "pinecone_configured": bool(Config.PINECONE_API_KEY)
         })
 

@@ -5,18 +5,19 @@ Creates relevant and challenging questions
 """
 
 import json
-import random
+import re
 import uuid
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from config import Config
 from .qa_system import QASystem
 
 class QuizGenerator:
     """Generate interactive quizzes with multiple choice questions"""
-    
+
     def __init__(self):
         self.qa_system = QASystem()
+        self.quiz_store: Dict[str, Dict[str, Any]] = {}
         self.difficulty_weights = {
             'easy': {'basic': 0.7, 'intermediate': 0.3, 'advanced': 0.0},
             'medium': {'basic': 0.3, 'intermediate': 0.5, 'advanced': 0.2},
@@ -59,16 +60,28 @@ class QuizGenerator:
             # Generate quiz ID and metadata
             quiz_id = str(uuid.uuid4())
             created_date = datetime.now().isoformat()
-            
-            # Generate questions
-            questions = []
-            for i in range(num_questions):
-                question = self._generate_single_question(
-                    subject, topic, difficulty, i + 1, question_types
+
+            # Generate questions: prefer single batched MCQ call (fast, reliable)
+            questions: List[Dict[str, Any]] = []
+            if question_types == ['multiple_choice'] or set(question_types) == {'multiple_choice'}:
+                questions = self._generate_mcq_batch(subject, topic, difficulty, num_questions)
+
+            # Fallback or mixed types: per-question generation
+            if len(questions) < num_questions:
+                start_idx = len(questions)
+                for i in range(start_idx, num_questions):
+                    q = self._generate_single_question(
+                        subject, topic, difficulty, i + 1, question_types
+                    )
+                    if q:
+                        questions.append(q)
+
+            # Final safety: pad with fallbacks if anything missing
+            while len(questions) < num_questions:
+                questions.append(
+                    self._generate_fallback_question(subject, difficulty, len(questions) + 1)
                 )
-                if question:
-                    questions.append(question)
-            
+
             if not questions:
                 return {
                     'success': False,
@@ -98,7 +111,9 @@ class QuizGenerator:
                 'completed': False,
                 'results': None
             }
-            
+
+            self.quiz_store[quiz_id] = quiz
+
             return {
                 'success': True,
                 'quiz': quiz,
@@ -133,24 +148,124 @@ class QuizGenerator:
         
         return {'valid': True, 'error': None}
     
-    def _generate_single_question(self, subject: str, topic: str, difficulty: str, 
-                                question_num: int, question_types: List[str]) -> Dict:
-        """Generate a single quiz question"""
+    def _generate_single_question(self, subject: str, topic: str, difficulty: str,
+                                  question_num: int, question_types: List[str]) -> Dict:
+        """Generate a single quiz question (MCQ only)."""
         try:
-            # Select question type
-            question_type = random.choice(question_types)
-            
-            if question_type == 'multiple_choice':
-                return self._generate_mcq(subject, topic, difficulty, question_num)
-            elif question_type == 'true_false':
-                return self._generate_true_false(subject, topic, difficulty, question_num)
-            else:
-                return self._generate_mcq(subject, topic, difficulty, question_num)
-                
-        except Exception as e:
-            # Return fallback question
+            return self._generate_mcq(subject, topic, difficulty, question_num)
+        except Exception:
             return self._generate_fallback_question(subject, difficulty, question_num)
     
+    @staticmethod
+    def _extract_json(raw: str) -> Optional[Any]:
+        """Extract a JSON object/array from a model response, tolerating markdown fences."""
+        if not raw or not isinstance(raw, str):
+            return None
+        text = raw.strip()
+        # Strip ```json ... ``` or ``` ... ``` fences
+        fence = re.match(r'^```(?:json)?\s*(.*?)\s*```$', text, re.DOTALL)
+        if fence:
+            text = fence.group(1).strip()
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        # Fallback: grab the first {...} or [...] block
+        match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except Exception:
+                return None
+        return None
+
+    def _normalize_mcq(self, item: Dict[str, Any], question_num: int, difficulty: str) -> Optional[Dict]:
+        """Validate and normalize a parsed MCQ dict into the internal question schema."""
+        if not isinstance(item, dict):
+            return None
+        q_text = item.get('question') or item.get('question_text')
+        options = item.get('options') or item.get('choices')
+        correct = item.get('correct')
+        if correct is None:
+            correct = item.get('correct_answer')
+        explanation = item.get('explanation', '')
+
+        if not q_text or not options or len(options) < 2:
+            return None
+        if isinstance(correct, str) and correct.strip().isdigit():
+            correct_idx = int(correct)
+        elif isinstance(correct, str) and correct.strip()[:1].upper() in 'ABCD':
+            correct_idx = ord(correct.strip()[0].upper()) - ord('A')
+        elif isinstance(correct, int):
+            correct_idx = correct
+        else:
+            return None
+
+        options = [str(o) for o in list(options)[:4]]
+        options += [''] * max(0, 4 - len(options))
+        if not (0 <= correct_idx < len(options)):
+            correct_idx = 0
+
+        return {
+            'id': f'q_{question_num}',
+            'question_number': question_num,
+            'question_text': str(q_text),
+            'question_type': 'multiple_choice',
+            'options': options,
+            'correct_answer': correct_idx,
+            'correct_letter': chr(ord('A') + correct_idx),
+            'explanation': explanation or f'The correct answer is {chr(ord("A") + correct_idx)}',
+            'difficulty': difficulty,
+            'points': 1,
+            'user_answer': None,
+            'is_correct': None
+        }
+
+    def _generate_mcq_batch(self, subject: str, topic: str, difficulty: str,
+                            num_questions: int) -> List[Dict]:
+        """Generate all MCQs in a single Gemini call returning a JSON array."""
+        try:
+            context = f"Subject: {subject}"
+            if topic:
+                context += f", Topic: {topic}"
+
+            prompt = {
+                "instruction": (
+                    f"Generate exactly {num_questions} distinct {difficulty} multiple choice "
+                    f"questions about {subject}."
+                    + (f" Focus on the topic: {topic}." if topic else "")
+                    + " Return ONLY a valid JSON array (no markdown, no commentary). "
+                    "Each element must follow this exact schema: "
+                    "{\"question\": \"...\", \"options\": [\"...\", \"...\", \"...\", \"...\"], "
+                    "\"correct\": 0, \"explanation\": \"...\"}. "
+                    "Each question must have exactly 4 options. "
+                    "\"correct\" is the zero-based index of the correct option."
+                )
+            }
+
+            response = self.qa_system.ask_question(prompt, context, provider="gemini")
+            if not response.get('success'):
+                return []
+
+            parsed = self._extract_json(response.get('answer'))
+            if isinstance(parsed, dict):
+                parsed = parsed.get('questions') if isinstance(parsed.get('questions'), list) else [parsed]
+            if not isinstance(parsed, list):
+                return []
+
+            questions: List[Dict] = []
+            for item in parsed:
+                normalized = self._normalize_mcq(item, len(questions) + 1, difficulty)
+                if normalized:
+                    questions.append(normalized)
+                if len(questions) >= num_questions:
+                    break
+
+            return questions
+
+        except Exception:
+            return []
+
     def _generate_mcq(self, subject: str, topic: str, difficulty: str, question_num: int) -> Dict:
         """Generate a multiple choice question using AI"""
         try:
@@ -173,172 +288,18 @@ class QuizGenerator:
             response = self.qa_system.ask_question(prompt, context, provider="gemini")
 
             if response.get('success'):
-                # Expect response['answer'] to be JSON string or dict
-                ans = response.get('answer')
-                try:
-                    if isinstance(ans, str):
-                        parsed = json.loads(ans)
-                    elif isinstance(ans, dict):
-                        parsed = ans
-                    else:
-                        parsed = None
-                except Exception:
-                    parsed = None
+                parsed = self._extract_json(response.get('answer'))
+                if isinstance(parsed, list) and parsed:
+                    parsed = parsed[0]
+                normalized = self._normalize_mcq(parsed, question_num, difficulty)
+                if normalized:
+                    return normalized
 
-                if parsed and isinstance(parsed, dict):
-                    q_text = parsed.get('question') or parsed.get('question_text')
-                    options = parsed.get('options') or parsed.get('choices')
-                    correct = parsed.get('correct')
-                    explanation = parsed.get('explanation', '')
-
-                    if q_text and options and len(options) >= 2 and (isinstance(correct, int) or (isinstance(correct, str) and correct.isdigit())):
-                        # normalize correct to int
-                        correct_idx = int(correct)
-                        # ensure options length is at least 2; pad/truncate to 4
-                        options = list(options)[:4] + ([''] * max(0, 4 - len(options)))
-
-                        return {
-                            'id': f'q_{question_num}',
-                            'question_number': question_num,
-                            'question_text': q_text,
-                            'question_type': 'multiple_choice',
-                            'options': options,
-                            'correct_answer': correct_idx,
-                            'correct_letter': chr(ord('A') + correct_idx) if 0 <= correct_idx < 26 else 'A',
-                            'explanation': explanation or f'The correct answer is {chr(ord("A") + correct_idx)}',
-                            'difficulty': difficulty,
-                            'points': 1,
-                            'user_answer': None,
-                            'is_correct': None
-                        }
-
-            # Fallback to previous behavior if Gemini response invalid
+            # Fallback to template question if Gemini response invalid
             return self._generate_fallback_question(subject, difficulty, question_num)
-                
+
         except Exception:
             return self._generate_fallback_question(subject, difficulty, question_num)
-    
-    def _parse_mcq_response(self, ai_response: str, question_num: int, difficulty: str) -> Dict:
-        """Parse AI response into structured question format"""
-        try:
-            lines = [line.strip() for line in ai_response.split('\n') if line.strip()]
-            
-            question_text = ""
-            options = []
-            correct_answer = ""
-            explanation = ""
-            
-            import re
-            for line in lines:
-                if line.startswith('Question:') or line.startswith('• Question:'):
-                    question_text = line.replace('Question:', '').replace('• Question:', '').strip()
-                elif re.match(r'^[ABCD]\)|^•\s*[ABCD]\)', line):
-                    # Strip leading bullets and letter prefixes like 'A) ' or '• A) '
-                    option_text = re.sub(r'^•\s*', '', line).strip()
-                    option_text = re.sub(r'^[ABCD]\)\s*', '', option_text).strip()
-                    options.append(option_text)
-                elif line.startswith('Correct Answer:') or line.startswith('• Correct Answer:'):
-                    correct_answer = line.replace('Correct Answer:', '').replace('• Correct Answer:', '').strip()
-                elif line.startswith('Explanation:') or line.startswith('• Explanation:'):
-                    explanation = line.replace('Explanation:', '').replace('• Explanation:', '').strip()
-            
-            # Validate parsed data
-            if not question_text or len(options) < 4:
-                raise ValueError("Incomplete question data")
-            
-            # Extract correct answer letter
-            correct_letter = correct_answer.upper().replace(')', '').strip()
-            if correct_letter not in ['A', 'B', 'C', 'D']:
-                correct_letter = 'A'  # Default fallback
-            
-            # Map letter to index
-            correct_index = ord(correct_letter) - ord('A')
-            
-            return {
-                'id': f'q_{question_num}',
-                'question_number': question_num,
-                'question_text': question_text,
-                'question_type': 'multiple_choice',
-                'options': options,
-                'correct_answer': correct_index,
-                'correct_letter': correct_letter,
-                'explanation': explanation or f"The correct answer is {correct_letter}",
-                'difficulty': difficulty,
-                'points': 1,
-                'user_answer': None,
-                'is_correct': None
-            }
-            
-        except Exception:
-            return self._generate_fallback_question("General", difficulty, question_num)
-    
-    def _generate_true_false(self, subject: str, topic: str, difficulty: str, question_num: int) -> Dict:
-        """Generate a true/false question"""
-        try:
-            context = f"Subject: {subject}"
-            if topic:
-                context += f", Topic: {topic}"
-            
-            prompt = f"""
-            Generate a {difficulty} level true/false question for {subject}.
-            {f"Focus on the topic: {topic}" if topic else ""}
-            
-            Format:
-            Statement: [Your statement here]
-            Answer: [True or False]
-            Explanation: [Brief explanation]
-            """
-            
-            response = self.qa_system.ask_question(prompt, context, provider="auto")
-            
-            if response['success']:
-                return self._parse_true_false_response(response['answer'], question_num, difficulty)
-            else:
-                return self._generate_fallback_question(subject, difficulty, question_num)
-                
-        except Exception:
-            return self._generate_fallback_question(subject, difficulty, question_num)
-    
-    def _parse_true_false_response(self, ai_response: str, question_num: int, difficulty: str) -> Dict:
-        """Parse true/false response"""
-        try:
-            lines = [line.strip() for line in ai_response.split('\n') if line.strip()]
-            
-            statement = ""
-            answer = ""
-            explanation = ""
-            
-            for line in lines:
-                if line.startswith('Statement:') or line.startswith('• Statement:'):
-                    statement = line.replace('Statement:', '').replace('• Statement:', '').strip()
-                elif line.startswith('Answer:') or line.startswith('• Answer:'):
-                    answer = line.replace('Answer:', '').replace('• Answer:', '').strip()
-                elif line.startswith('Explanation:') or line.startswith('• Explanation:'):
-                    explanation = line.replace('Explanation:', '').replace('• Explanation:', '').strip()
-            
-            if not statement:
-                raise ValueError("No statement found")
-            
-            # Determine correct answer
-            is_true = answer.lower().startswith('true')
-            
-            return {
-                'id': f'q_{question_num}',
-                'question_number': question_num,
-                'question_text': statement,
-                'question_type': 'true_false',
-                'options': ['True', 'False'],
-                'correct_answer': 0 if is_true else 1,
-                'correct_letter': 'True' if is_true else 'False',
-                'explanation': explanation or f"The statement is {answer.lower()}",
-                'difficulty': difficulty,
-                'points': 1,
-                'user_answer': None,
-                'is_correct': None
-            }
-            
-        except Exception:
-            return self._generate_fallback_question("General", difficulty, question_num)
     
     def _generate_fallback_question(self, subject: str, difficulty: str, question_num: int) -> Dict:
         """Generate fallback question when AI fails"""
@@ -405,38 +366,81 @@ class QuizGenerator:
     
     def submit_quiz(self, quiz_id: str, user_answers: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Submit quiz and calculate score
-        
+        Submit quiz and calculate the real score using the stored quiz.
+
         Args:
-            quiz_id (str): ID of the quiz
-            user_answers (dict): User's answers {question_id: answer_index}
-            
-        Returns:
-            dict: Quiz results with score and feedback
+            quiz_id: ID of the quiz returned by generate_quiz.
+            user_answers: Mapping of question identifier -> selected option index.
+                Keys may be the question number ("1", 1) or the question id ("q_1").
+                Values may be int index, letter ("A"), or option text.
         """
         try:
-            # In a real application, you would fetch the quiz from database
-            # For now, return a mock result structure
-            
-            total_questions = len(user_answers)
+            quiz = self.quiz_store.get(quiz_id)
+            if not quiz:
+                return {
+                    'success': False,
+                    'results': None,
+                    'error': 'Quiz not found. Generate a quiz first.'
+                }
+
+            def normalize_answer(value: Any, options: List[str]) -> Optional[int]:
+                if value is None:
+                    return None
+                if isinstance(value, bool):
+                    return int(value)
+                if isinstance(value, int):
+                    return value if 0 <= value < len(options) else None
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if stripped.isdigit():
+                        idx = int(stripped)
+                        return idx if 0 <= idx < len(options) else None
+                    letter = stripped[:1].upper()
+                    if letter and 'A' <= letter <= chr(ord('A') + len(options) - 1):
+                        return ord(letter) - ord('A')
+                    for i, opt in enumerate(options):
+                        if str(opt).strip().lower() == stripped.lower():
+                            return i
+                return None
+
+            questions = quiz.get('questions', [])
+            total_questions = len(questions)
             correct_answers = 0
-            
-            # Mock scoring (in real app, compare with correct answers)
-            for question_id, user_answer in user_answers.items():
-                # This is simplified - actual implementation would check against correct answers
-                if random.random() > 0.3:  # 70% chance of being correct (mock)
+            detailed_results: Dict[str, Any] = {}
+
+            for q in questions:
+                qnum = q['question_number']
+                options = q.get('options', [])
+                lookup_keys = [str(qnum), qnum, q.get('id')]
+                raw = None
+                for key in lookup_keys:
+                    if key is not None and key in user_answers:
+                        raw = user_answers[key]
+                        break
+
+                user_idx = normalize_answer(raw, options)
+                correct_idx = q.get('correct_answer')
+                is_correct = user_idx is not None and user_idx == correct_idx
+                if is_correct:
                     correct_answers += 1
-            
+
+                detailed_results[str(qnum)] = {
+                    'question_text': q.get('question_text'),
+                    'selected': user_idx,
+                    'correct': correct_idx,
+                    'is_correct': is_correct,
+                    'selected_text': options[user_idx] if isinstance(user_idx, int) and 0 <= user_idx < len(options) else None,
+                    'correct_text': options[correct_idx] if isinstance(correct_idx, int) and 0 <= correct_idx < len(options) else None,
+                    'explanation': q.get('explanation', '')
+                }
+
             score_percentage = (correct_answers / total_questions * 100) if total_questions > 0 else 0
-            
-            # Determine grade
             grade = 'F'
-            grading_scale = self._get_grading_scale()
-            for grade_letter, criteria in grading_scale.items():
+            for grade_letter, criteria in self._get_grading_scale().items():
                 if score_percentage >= criteria['min_percentage']:
                     grade = grade_letter
                     break
-            
+
             results = {
                 'quiz_id': quiz_id,
                 'submitted_at': datetime.now().isoformat(),
@@ -447,17 +451,19 @@ class QuizGenerator:
                     'grade': grade,
                     'passed': score_percentage >= 60
                 },
-                'time_taken_minutes': random.randint(5, 20),  # Mock time
                 'feedback': self._generate_feedback(score_percentage, grade),
-                'detailed_results': user_answers  # In real app, include correct/incorrect for each question
+                'detailed_results': detailed_results
             }
-            
+
+            quiz['completed'] = True
+            quiz['results'] = results
+
             return {
                 'success': True,
                 'results': results,
                 'error': None
             }
-            
+
         except Exception as e:
             return {
                 'success': False,
