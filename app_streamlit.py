@@ -412,7 +412,7 @@ def render_quiz_generator():
                 st.markdown(q['question_text'])
 
                 if q['question_type'] == 'multiple_choice':
-                    options = q['options']
+                    options = [o for o in q['options'] if str(o).strip()]
                     choice_labels = [f"{chr(65+i)}. {options[i]}" for i in range(len(options))]
                     radio_key = f"q_{q['question_number']}_radio"
                     selected_label = st.radio(
