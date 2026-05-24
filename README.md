@@ -5,10 +5,10 @@ A comprehensive AI-powered learning assistant built with Flask, Streamlit, and a
 ## ✨ Features
 
 ### 📚 Ask Anything - Q&A System (Milestone 2)
-- **Multi-provider AI integration**: OpenAI GPT and Google Gemini APIs
+- **Multi-provider AI integration**: Google Gemini (primary) with OpenAI GPT fallback
 - **Structured answers**: All responses formatted in organized bullet points
 - **Context-aware**: Supports additional context for better answers
-- **Fallback mechanism**: Graceful degradation when one provider fails
+- **Fallback mechanism**: Auto mode tries Gemini first, then OpenAI if it fails
 
 ### 📋 Personalized Study Plans (Milestone 3)
 - **Goal-oriented planning**: Input your learning objectives
@@ -19,13 +19,13 @@ A comprehensive AI-powered learning assistant built with Flask, Streamlit, and a
 - **Progress tracking**: Mark completed days and track percentages
 
 ### 🎯 Interactive Quiz Generator (Milestone 4)
-- **Dynamic MCQ generation**: AI-powered question creation
+- **Dynamic MCQ generation**: AI-powered multiple-choice questions (4 options each)
+- **Batched generation**: All questions produced in a single Gemini call for speed and reliability
 - **Adjustable difficulty**: Easy, medium, and hard levels
-- **Authentic categorization**: Questions categorized by subtopic
-- **Intelligent weighting**: Balanced question distribution across difficulty
-- **Automatic validation**: Verifies answerable questions before storage
-- **Contextual hints**: Suggests difficulty-appropriate rationales
-- **Score summaries**: Detailed performance reports by subject
+- **Robust JSON parsing**: Tolerates markdown-wrapped model responses
+- **Real scoring**: Backend stores generated quizzes and scores submissions against truth
+- **Per-question feedback**: Reports selected vs. correct option with explanation
+- **Graceful fallback**: Template questions when AI is unavailable
 
 ### 📄 Document-Based Q&A (Milestone 5)
 - **RAG technology**: Retrieval-Augmented Generation for accurate answers
@@ -223,10 +223,10 @@ curl -X POST http://localhost:5000/api/documents/upload \
 - Memory-efficient implementation
 
 ### ✅ Milestone 4: Interactive Quiz Generator
-- Dynamic MCQ generation
-- Difficulty-based question categorization
-- True/False and Multiple Choice support
-- Scoring and feedback system
+- Dynamic MCQ generation (multiple choice only)
+- Difficulty-based question generation (easy/medium/hard)
+- Batched single-call generation with robust JSON parsing
+- Real backend scoring with per-question feedback
 - Authentic educational assessment tools
 
 ### ✅ Milestone 5: RAG-based Learning Assistant
