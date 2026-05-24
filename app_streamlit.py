@@ -355,6 +355,9 @@ def render_quiz_generator():
         
         submitted = st.form_submit_button("Generate Quiz", use_container_width=True, type="primary")
     
+    # Step 1: generate only. Store quiz then rerun so the quiz UI renders
+    # outside this form-submit branch (radio clicks trigger reruns that would
+    # otherwise reset `submitted` to False and make the quiz disappear).
     if submitted and subject.strip():
         with st.spinner("Creating your quiz..."):
             try:
@@ -369,92 +372,87 @@ def render_quiz_generator():
                 response = requests.post(f"{API_BASE_URL}/api/quiz/generate", json=payload, timeout=60)
                 response.raise_for_status()
                 quiz_data = response.json()
-                
-                st.session_state.quiz_data = quiz_data
-                
-                if quiz_data['success']:
-                    st.success("✅ Quiz generated successfully!")
-                    
-                    quiz = quiz_data['quiz']
-                    st.markdown(f"### 📝 Quiz: {quiz['metadata']['subject']}")
-                    if quiz['metadata'].get('topic'):
-                        st.markdown(f"**Topic:** {quiz['metadata']['topic']}")
-                    st.markdown(f"**Difficulty:** {quiz['metadata']['difficulty']}")
-                    st.markdown(f"**Questions:** {quiz['metadata']['num_questions']}")
-                    
-                    # Quiz questions
+
+                if quiz_data.get('success'):
+                    st.session_state.quiz_data = quiz_data
+                    st.session_state.quiz_results = None
                     st.session_state.user_answers = {
                         str(q['question_number']): None
-                        for q in quiz['questions']
+                        for q in quiz_data['quiz']['questions']
                     }
-
-                    for q in quiz['questions']:
-                        with st.container():
-                            st.markdown(f"**Question {q['question_number']}:**")
-                            st.markdown(q['question_text'])
-                            
-                            if q['question_type'] == 'multiple_choice':
-                                options = q['options']
-                                # Build human-readable choices (e.g., 'A. Option text') so clicks map directly
-                                choice_labels = [f"{chr(65+i)}. {options[i]}" for i in range(len(options))]
-                                radio_key = f"q_{q['question_number']}_radio"
-                                try:
-                                    selected_label = st.radio(
-                                        "Choose your answer:",
-                                        choice_labels,
-                                        index=None,
-                                        key=radio_key,
-                                    )
-                                except Exception as e:
-                                    st.error(f"UI error rendering choices: {e}")
-                                    selected_label = None
-
-                                # Map label back to index (A->0, B->1, ...)
-                                if isinstance(selected_label, str) and selected_label:
-                                    try:
-                                        selected_index = ord(selected_label[0].upper()) - ord('A')
-                                    except Exception:
-                                        selected_index = None
-                                else:
-                                    selected_index = None
-
-                                prev = st.session_state.user_answers.get(str(q['question_number']))
-                                st.session_state.user_answers[str(q['question_number'])] = selected_index
-                                if selected_index is not None and prev != selected_index:
-                                    st.session_state._quiz_debug.append(f"{datetime.now().isoformat()} - Q{q['question_number']} selected {selected_index}")
-                            
-                            st.markdown("---")
-                    
-                    if st.button("Submit Quiz", use_container_width=True, type="primary"):
-                        with st.spinner("Calculating score..."):
-                            try:
-                                submit_payload = {
-                                    "quiz_id": quiz['id'],
-                                    "answers": {
-                                        str(k): v
-                                        for k, v in st.session_state.user_answers.items()
-                                    }
-                                }
-                                sub_resp = requests.post(
-                                    f"{API_BASE_URL}/api/quiz/submit",
-                                    json=submit_payload,
-                                    timeout=30,
-                                )
-                                sub_resp.raise_for_status()
-                                sub_data = sub_resp.json()
-                                if not sub_data.get('success'):
-                                    raise ValueError(sub_data.get('error', 'Failed to submit quiz'))
-                                st.session_state.quiz_results = sub_data['results']
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error submitting quiz: {str(e)}")
-                    
+                    st.rerun()
                 else:
-                    st.error(f"Error: {quiz_data.get('error', 'Unknown error')}");
-                    
+                    st.error(f"Error: {quiz_data.get('error', 'Unknown error')}")
+
             except Exception as e:
                 st.error(f"Error generating quiz: {str(e)}")
-    
+
+    # Step 2: render the active quiz from session state (persists across reruns)
+    active = st.session_state.quiz_data
+    if (active and isinstance(active, dict) and active.get('success')
+            and not st.session_state.quiz_results):
+        quiz = active['quiz']
+
+        # Ensure answer map exists (e.g., after a fresh page load)
+        if not st.session_state.user_answers:
+            st.session_state.user_answers = {
+                str(q['question_number']): None for q in quiz['questions']
+            }
+
+        st.success("✅ Quiz ready! Pilih jawaban lalu klik Submit.")
+        st.markdown(f"### 📝 Quiz: {quiz['metadata']['subject']}")
+        if quiz['metadata'].get('topic'):
+            st.markdown(f"**Topic:** {quiz['metadata']['topic']}")
+        st.markdown(f"**Difficulty:** {quiz['metadata']['difficulty']}")
+        st.markdown(f"**Questions:** {quiz['metadata']['num_questions']}")
+
+        for q in quiz['questions']:
+            with st.container():
+                st.markdown(f"**Question {q['question_number']}:**")
+                st.markdown(q['question_text'])
+
+                if q['question_type'] == 'multiple_choice':
+                    options = q['options']
+                    choice_labels = [f"{chr(65+i)}. {options[i]}" for i in range(len(options))]
+                    radio_key = f"q_{q['question_number']}_radio"
+                    selected_label = st.radio(
+                        "Choose your answer:",
+                        choice_labels,
+                        index=None,
+                        key=radio_key,
+                    )
+                    if isinstance(selected_label, str) and selected_label:
+                        selected_index = ord(selected_label[0].upper()) - ord('A')
+                    else:
+                        selected_index = None
+                    st.session_state.user_answers[str(q['question_number'])] = selected_index
+
+                st.markdown("---")
+
+        if st.button("Submit Quiz", use_container_width=True, type="primary"):
+            with st.spinner("Calculating score..."):
+                try:
+                    submit_payload = {
+                        "quiz_id": quiz['id'],
+                        "answers": {
+                            str(k): v
+                            for k, v in st.session_state.user_answers.items()
+                        }
+                    }
+                    sub_resp = requests.post(
+                        f"{API_BASE_URL}/api/quiz/submit",
+                        json=submit_payload,
+                        timeout=30,
+                    )
+                    sub_resp.raise_for_status()
+                    sub_data = sub_resp.json()
+                    if not sub_data.get('success'):
+                        raise ValueError(sub_data.get('error', 'Failed to submit quiz'))
+                    st.session_state.quiz_results = sub_data['results']
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error submitting quiz: {str(e)}")
+
     # Show results if available (only when scoring has been computed)
     if st.session_state.quiz_results and isinstance(st.session_state.quiz_results, dict) and 'score' in st.session_state.quiz_results:
         st.markdown("---")
