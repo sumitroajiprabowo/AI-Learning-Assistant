@@ -214,7 +214,7 @@ def render_qa_system():
     with st.form("question_form"):
         question = st.text_area("Your Question:", placeholder="Type your question here...", height=100)
         context = st.text_input("Optional Context (for better answers):", placeholder="Provide additional context if needed")
-        provider = st.selectbox("AI Provider:", ["auto", "gemini"], index=0)
+        provider = st.selectbox("AI Provider:", ["auto", "gemini", "openai"], index=0)
         
         submitted = st.form_submit_button("Get Answer", use_container_width=True, type="primary")
     
@@ -539,6 +539,12 @@ def render_documents():
                 st.markdown(f"📄 **{doc.get('document_name', 'Unknown')}**")
             with col2:
                 if st.button("Remove", key=f"remove_{doc.get('document_id', '')}"):
+                    doc_id = doc.get('document_id')
+                    if doc_id:
+                        try:
+                            requests.delete(f"{API_BASE_URL}/api/documents/{doc_id}", timeout=10)
+                        except Exception:
+                            pass
                     st.session_state.uploaded_documents.remove(doc)
                     st.rerun()
     
