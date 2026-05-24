@@ -209,10 +209,9 @@ class QuizGenerator:
         else:
             return None
 
-        options = [str(o) for o in list(options)[:4]]
-        options += [''] * max(0, 4 - len(options))
-        if not (0 <= correct_idx < len(options)):
-            correct_idx = 0
+        options = [str(o).strip() for o in list(options)[:4] if str(o).strip()]
+        if len(options) < 2 or not (0 <= correct_idx < len(options)):
+            return None
 
         return {
             'id': f'q_{question_num}',
