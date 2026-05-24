@@ -122,6 +122,12 @@ def initialize_session_state():
         st.session_state.uploaded_documents = []
     if 'rag_questions' not in st.session_state:
         st.session_state.rag_questions = []
+    if 'user_answers' not in st.session_state:
+        st.session_state.user_answers = {}
+    if '_quiz_debug' not in st.session_state:
+        st.session_state._quiz_debug = []
+    if '_quiz_debug' not in st.session_state:
+        st.session_state._quiz_debug = []
 
 def check_api_health():
     """Check if backend API is available"""
@@ -210,36 +216,27 @@ def render_qa_system():
     with st.form("question_form"):
         question = st.text_area("Your Question:", placeholder="Type your question here...", height=100)
         context = st.text_input("Optional Context (for better answers):", placeholder="Provide additional context if needed")
-        provider = st.selectbox("AI Provider:", ["auto", "openai", "gemini"], index=0)
+        provider = st.selectbox("AI Provider:", ["auto", "gemini"], index=0)
         
         submitted = st.form_submit_button("Get Answer", use_container_width=True, type="primary")
     
     if submitted and question.strip():
         with st.spinner("Generating answer..."):
             try:
-                # Call API
                 payload = {
                     "question": question,
                     "context": context,
                     "provider": provider
                 }
-                
-                # Mock response for demo
-                answer = f"""
-                • **Understanding the Question**: I need to analyze the question "{question}" thoroughly.
-                • **Key Concepts**: Based on the question, here are the main concepts to consider:
-                  • First important point related to your question
-                  • Second aspect that needs attention  
-                  • Third consideration for a complete answer
-                • **Detailed Explanation**: 
-                  • The core concept involves understanding the fundamental principles
-                  • Practical application requires hands-on experience
-                  • Best practices suggest starting with basics and building up
-                • **Recommendations**:
-                  • Start with foundational knowledge
-                  • Practice with real-world examples
-                  • Seek additional resources for deeper understanding
-                """
+
+                response = requests.post(f"{API_BASE_URL}/api/ask", json=payload, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+
+                if not result.get("success"):
+                    raise ValueError(result.get("error", "Failed to generate answer"))
+
+                answer = result.get("answer", "• No answer available")
                 
                 # Add to history
                 st.session_state.qa_history.append({
@@ -288,7 +285,6 @@ def render_study_planner():
         
         with st.spinner("Generating your personalized study plan..."):
             try:
-                # Call API
                 payload = {
                     "goals": goals,
                     "subjects": subjects,
@@ -297,30 +293,10 @@ def render_study_planner():
                     "difficulty_level": difficulty,
                     "learning_style": learning_style
                 }
-                
-                # Mock study plan for demonstration
-                study_plan = {
-                    "success": True,
-                    "plan": {
-                        "id": str(uuid.uuid4()),
-                        "daily_breakdown": [
-                            {
-                                "day": i+1,
-                                "date": (datetime.now() + timedelta(days=i)).strftime("%Y-%m-%d"),
-                                "primary_subject": subjects[i % len(subjects)],
-                                "total_hours": daily_hours,
-                                "topics": [f"Topic {j+1} for Day {i+1}" for j in range(3)],
-                                "activities": [
-                                    {"activity": "Study", "duration_hours": daily_hours * 0.6, "topics_covered": ["Chapter 1"], "completed": False},
-                                    {"activity": "Practice", "duration_hours": daily_hours * 0.3, "topics_covered": ["Exercises"], "completed": False},
-                                    {"activity": "Review", "duration_hours": daily_hours * 0.1, "topics_covered": ["Notes"], "completed": False}
-                                ],
-                                "completed": False
-                            }
-                            for i in range(min(7, timeline))  # Show first 7 days for demo
-                        ]
-                    }
-                }
+
+                response = requests.post(f"{API_BASE_URL}/api/study-plan", json=payload, timeout=60)
+                response.raise_for_status()
+                study_plan = response.json()
                 
                 st.session_state.study_plan = study_plan
                 
@@ -376,40 +352,25 @@ def render_quiz_generator():
         
         with col2:
             num_questions = st.slider("Number of Questions:", min_value=5, max_value=50, value=10)
-            question_types = st.multiselect(
-                "Question Types:",
-                ["multiple_choice", "true_false"],
-                default=["multiple_choice"]
-            )
+            st.info("Quiz ini memakai pilihan ganda saja agar klik jawaban dan penilaian konsisten.")
+            question_types = ["multiple_choice"]
         
         submitted = st.form_submit_button("Generate Quiz", use_container_width=True, type="primary")
     
     if submitted and subject.strip():
         with st.spinner("Creating your quiz..."):
             try:
-                # Mock quiz for demonstration
-                quiz_data = {
-                    "success": True,
-                    "quiz": {
-                        "id": str(uuid.uuid4()),
-                        "metadata": {
-                            "subject": subject,
-                            "topic": topic,
-                            "difficulty": difficulty,
-                            "num_questions": num_questions
-                        },
-                        "questions": [
-                            {
-                                "question_number": i+1,
-                                "question_text": f"Sample {difficulty} question about {subject} #{i+1}: What is a key concept?",
-                                "question_type": "multiple_choice",
-                                "options": ["Option A", "Option B", "Option C", "Option D"],
-                                "points": 1
-                            }
-                            for i in range(min(3, num_questions))  # Demo: show 3 questions
-                        ]
-                    }
+                payload = {
+                    "subject": subject,
+                    "topic": topic,
+                    "difficulty": difficulty,
+                    "num_questions": num_questions,
+                    "question_types": question_types
                 }
+
+                response = requests.post(f"{API_BASE_URL}/api/quiz/generate", json=payload, timeout=60)
+                response.raise_for_status()
+                quiz_data = response.json()
                 
                 st.session_state.quiz_data = quiz_data
                 
@@ -424,8 +385,11 @@ def render_quiz_generator():
                     st.markdown(f"**Questions:** {quiz['metadata']['num_questions']}")
                     
                     # Quiz questions
-                    st.session_state.user_answers = {}
-                    
+                    st.session_state.user_answers = {
+                        str(q['question_number']): None
+                        for q in quiz['questions']
+                    }
+
                     for q in quiz['questions']:
                         with st.container():
                             st.markdown(f"**Question {q['question_number']}:**")
@@ -433,21 +397,66 @@ def render_quiz_generator():
                             
                             if q['question_type'] == 'multiple_choice':
                                 options = q['options']
-                                selected = st.radio(
-                                    "Choose your answer:",
-                                    range(len(options)),
-                                    format_func=lambda x: f"{chr(65+x)}. {options[x]}",
-                                    key=f"q_{q['question_number']}"
-                                )
-                                st.session_state.user_answers[str(q['question_number'])] = selected
+                                # Build human-readable choices (e.g., 'A. Option text') so clicks map directly
+                                choice_labels = [f"{chr(65+i)}. {options[i]}" for i in range(len(options))]
+                                radio_key = f"q_{q['question_number']}_radio"
+                                try:
+                                    selected_label = st.radio(
+                                        "Choose your answer:",
+                                        choice_labels,
+                                        index=None,
+                                        key=radio_key,
+                                    )
+                                except Exception as e:
+                                    st.error(f"UI error rendering choices: {e}")
+                                    selected_label = None
+
+                                # Map label back to index (A->0, B->1, ...)
+                                if isinstance(selected_label, str) and selected_label:
+                                    try:
+                                        selected_index = ord(selected_label[0].upper()) - ord('A')
+                                    except Exception:
+                                        selected_index = None
+                                else:
+                                    selected_index = None
+
+                                prev = st.session_state.user_answers.get(str(q['question_number']))
+                                st.session_state.user_answers[str(q['question_number'])] = selected_index
+                                if selected_index is not None and prev != selected_index:
+                                    st.session_state._quiz_debug.append(f"{datetime.now().isoformat()} - Q{q['question_number']} selected {selected_index}")
                             
                             st.markdown("---")
                     
                     if st.button("Submit Quiz", use_container_width=True, type="primary"):
                         with st.spinner("Calculating score..."):
-                            # Mock scoring
-                            correct = sum(1 for ans in st.session_state.user_answers.values() if ans == 0)
-                            total = len(st.session_state.user_answers)
+                            correct = 0
+                            total = len(quiz['questions'])
+                            detailed_results = {}
+
+                            for q in quiz['questions']:
+                                user_answer = st.session_state.user_answers.get(str(q['question_number']))
+                                correct_raw = q.get('correct_answer')
+                                if isinstance(correct_raw, str) and correct_raw[:1].upper() in 'ABCD':
+                                    correct_answer = ord(correct_raw[:1].upper()) - ord('A')
+                                elif isinstance(correct_raw, int):
+                                    correct_answer = correct_raw
+                                else:
+                                    correct_letter = q.get('correct_letter', 'A')
+                                    correct_answer = ord(correct_letter[:1].upper()) - ord('A') if isinstance(correct_letter, str) and correct_letter[:1].upper() in 'ABCD' else 0
+
+                                is_correct = user_answer is not None and user_answer == correct_answer
+                                if is_correct:
+                                    correct += 1
+
+                                detailed_results[str(q['question_number'])] = {
+                                    'question_text': q['question_text'],
+                                    'selected': user_answer,
+                                    'correct': correct_answer,
+                                    'is_correct': is_correct,
+                                    'selected_text': q['options'][user_answer] if isinstance(user_answer, int) and 0 <= user_answer < len(q['options']) else None,
+                                    'correct_text': q['options'][correct_answer] if 0 <= correct_answer < len(q['options']) else None,
+                                }
+
                             percentage = (correct / total * 100) if total > 0 else 0
                             
                             results = {
@@ -459,6 +468,7 @@ def render_quiz_generator():
                                     "passed": percentage >= 60
                                 },
                                 "feedback": "Great job!" if percentage >= 80 else "Good effort, keep practicing!"
+                                ,"detailed_results": detailed_results
                             }
                             
                             st.session_state.quiz_results = results
@@ -470,11 +480,11 @@ def render_quiz_generator():
             except Exception as e:
                 st.error(f"Error generating quiz: {str(e)}")
     
-    # Show results if available
-    if st.session_state.quiz_results:
+    # Show results if available (only when scoring has been computed)
+    if st.session_state.quiz_results and isinstance(st.session_state.quiz_results, dict) and 'score' in st.session_state.quiz_results:
         st.markdown("---")
         results = st.session_state.quiz_results['score']
-        
+
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Correct Answers", f"{results['correct_answers']}/{results['total_questions']}")
@@ -482,16 +492,36 @@ def render_quiz_generator():
             st.metric("Score", f"{results['percentage']:.1f}%")
         with col3:
             st.metric("Grade", results['grade'])
-        
-        if results['passed']:
-            st.success(f"✅ {st.session_state.quiz_results['feedback']}")
+
+        if results.get('passed'):
+            st.success(f"✅ {st.session_state.quiz_results.get('feedback', '')}")
         else:
             st.warning("⚠️ Study more and try again!")
-        
+
+        detailed_results = st.session_state.quiz_results.get('detailed_results', {})
+        if detailed_results:
+            st.markdown("### 🧾 Per Question Result")
+            for qid, info in detailed_results.items():
+                if info.get('is_correct'):
+                    st.success(
+                        f"Q{qid}: Benar | Jawaban kamu: {info.get('selected_text')} | Jawaban benar: {info.get('correct_text')}"
+                    )
+                else:
+                    st.error(
+                        f"Q{qid}: Salah | Jawaban kamu: {info.get('selected_text')} | Jawaban benar: {info.get('correct_text')}"
+                    )
+
         if st.button("Start New Quiz"):
             st.session_state.quiz_data = None
             st.session_state.quiz_results = None
+            st.session_state.user_answers = {}
             st.rerun()
+
+    # Debug area for quiz interactions (hidden unless needed)
+    if st.session_state._quiz_debug:
+        with st.expander("Quiz Interaction Debug Log"):
+            for d in st.session_state._quiz_debug[-50:]:
+                st.markdown(f"- {d}")
 
 def render_documents():
     """Render Document Q&A page"""
@@ -509,26 +539,20 @@ def render_documents():
     if uploaded and uploaded_file:
         with st.spinner("Processing document..."):
             try:
-                # Save file
-                file_path = os.path.join(UPLOAD_FOLDER, uploaded_file.name)
-                with open(file_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
-                
-                # Mock upload response
-                response = {
-                    "success": True,
-                    "document_id": str(uuid.uuid4()),
-                    "document_name": uploaded_file.name,
-                    "chunks_created": 15,
-                    "content_length": len(uploaded_file.getvalue())
+                files = {
+                    "file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type or "application/octet-stream")
                 }
-                
-                if response['success']:
-                    st.session_state.uploaded_documents.append(response)
-                    st.success(f"✅ Document '{uploaded_file.name}' uploaded successfully!")
+
+                response = requests.post(f"{API_BASE_URL}/api/documents/upload", files=files, timeout=120)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get('success'):
+                    st.session_state.uploaded_documents.append(result)
+                    st.success(f"✅ Document '{result.get('document_name', uploaded_file.name)}' uploaded successfully!")
                 else:
-                    st.error(f"Error: {response.get('error', 'Unknown error')}");
-                    
+                    st.error(f"Error: {result.get('error', 'Unknown error')}")
+
             except Exception as e:
                 st.error(f"Error uploading document: {str(e)}")
     
@@ -565,18 +589,21 @@ def render_documents():
     if asked and question.strip() and st.session_state.uploaded_documents:
         with st.spinner("Searching documents..."):
             try:
-                # Mock RAG response
-                answer = """
-                **Based on your documents:**
-                
-                • The document contains information related to your question.
-                • Key points from the document suggest the following:
-                  • First important detail
-                  • Second relevant point
-                  • Third consideration
-                
-                **Sources:** Document content analysis
-                """
+                doc_ids = [doc_options[name] for name in selected_docs if name in doc_options]
+                payload = {
+                    "question": question,
+                    "document_ids": doc_ids,
+                    "top_k": 5
+                }
+
+                response = requests.post(f"{API_BASE_URL}/api/documents/ask", json=payload, timeout=60)
+                response.raise_for_status()
+                result = response.json()
+
+                if not result.get('success'):
+                    raise ValueError(result.get('error', 'Failed to answer document question'))
+
+                answer = result.get('answer', '• No answer available')
                 
                 st.session_state.rag_questions.append({
                     'question': question,
@@ -607,12 +634,31 @@ def render_settings():
     st.markdown("### 🔑 API Configuration")
     
     with st.form("api_settings"):
-        openai_key = st.text_input("OpenAI API Key:", type="password")
         gemini_key = st.text_input("Gemini API Key:", type="password")
         pinecone_key = st.text_input("Pinecone API Key (Optional):", type="password")
         
         if st.form_submit_button("Save Configuration"):
-            st.success("Configurations saved!")
+            try:
+                payload = {
+                    "gemini_api_key": gemini_key,
+                    "pinecone_api_key": pinecone_key
+                }
+
+                response = requests.post(f"{API_BASE_URL}/api/settings/api-keys", json=payload, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+
+                if result.get("success"):
+                    st.success("Configurations saved!")
+                    if result.get("gemini_configured"):
+                        st.info("Gemini is now configured and ready to use.")
+                    else:
+                        st.warning("Gemini API key is empty. Q&A will not work until it is configured.")
+                else:
+                    st.error(result.get("error", "Failed to save configuration"))
+
+            except Exception as e:
+                st.error(f"Error saving configuration: {str(e)}")
     
     st.markdown("### 🎨 Theme")
     

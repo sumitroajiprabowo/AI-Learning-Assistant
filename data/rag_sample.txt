@@ -1,0 +1,6 @@
+Capstone AI RAG sample document.
+
+This project supports document upload, chunking, embedding, and question answering.
+The learning assistant stores uploaded document metadata and retrieves relevant chunks for answers.
+Flask exposes /api/documents/upload for file upload and /api/documents/ask for document questions.
+The Streamlit UI should save API settings to the backend and refresh the AI modules.

@@ -1,8 +1,12 @@
 streamlit
 google-generativeai
 pypdf
+pymupdf
+python-docx
 faiss-cpu
 sentence-transformers
+pandas>=2.2.0
+scikit-learn>=1.5.0
 langchain
 langchain-community
 langchain-text-splitters

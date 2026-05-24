@@ -28,9 +28,9 @@ def test_endpoints():
         {
             "name": "Predict Endpoint",
             "method": "POST",
-            "url": f"{base_url}/api/predict",
+            "url": f"{base_url}/api/ask",
             "data": {"test": "data", "value": 123},
-            "expected_status": 200
+            "expected_status": 400
         },
         {
             "name": "404 Test",

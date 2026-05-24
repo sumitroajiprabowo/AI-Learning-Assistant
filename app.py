@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime
 import json
+from pathlib import Path
 
 from config import Config, config
 from modules.qa_system import QASystem
@@ -23,20 +24,81 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 app.config.from_object(config[os.getenv('FLASK_ENV', 'default')])
+ENV_FILE_PATH = Path(__file__).resolve().parent / ".env"
 
 # Ensure upload folder exists
 os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
 
-# Initialize AI modules
-try:
-    qa_system = QASystem()
-    study_planner = StudyPlanGenerator()
-    quiz_generator = QuizGenerator()
-    rag_assistant = RAGLearningAssistant()
-    logger.info("All AI modules initialized successfully")
-except Exception as e:
-    logger.error(f"Error initializing AI modules: {str(e)}")
-    qa_system = study_planner = quiz_generator = rag_assistant = None
+qa_system = None
+study_planner = None
+quiz_generator = None
+rag_assistant = None
+
+
+def _set_env_value(key, value):
+    """Update the current process environment and Config attributes."""
+    if value is None or not str(value).strip():
+        os.environ.pop(key, None)
+        setattr(Config, key, None)
+    else:
+        normalized_value = str(value).strip()
+        os.environ[key] = normalized_value
+        setattr(Config, key, normalized_value)
+
+
+def _persist_env_file(updates):
+    """Persist selected settings to the workspace .env file."""
+    existing_lines = []
+    if ENV_FILE_PATH.exists():
+        existing_lines = ENV_FILE_PATH.read_text(encoding="utf-8").splitlines()
+
+    updated_keys = set()
+    output_lines = []
+
+    for line in existing_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in line:
+            output_lines.append(line)
+            continue
+
+        key, current_value = line.split("=", 1)
+        key = key.strip()
+
+        if key in updates:
+            new_value = updates[key]
+            updated_keys.add(key)
+            if new_value is None or not str(new_value).strip():
+                continue
+            output_lines.append(f"{key}={str(new_value).strip()}")
+        else:
+            output_lines.append(line)
+
+    for key, value in updates.items():
+        if key in updated_keys:
+            continue
+        if value is None or not str(value).strip():
+            continue
+        output_lines.append(f"{key}={str(value).strip()}")
+
+    ENV_FILE_PATH.write_text("\n".join(output_lines).rstrip() + "\n", encoding="utf-8")
+
+
+def initialize_ai_modules():
+    """Initialize or refresh all AI modules."""
+    global qa_system, study_planner, quiz_generator, rag_assistant
+
+    try:
+        qa_system = QASystem()
+        study_planner = StudyPlanGenerator()
+        quiz_generator = QuizGenerator()
+        rag_assistant = RAGLearningAssistant()
+        logger.info("All AI modules initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing AI modules: {str(e)}")
+        qa_system = study_planner = quiz_generator = rag_assistant = None
+
+
+initialize_ai_modules()
 
 # HTML Templates
 MAIN_TEMPLATE = """
@@ -78,7 +140,7 @@ MAIN_TEMPLATE = """
         <div class="feature-grid">
             <div class="feature-card">
                 <h3>📚 Ask Anything (Q&A System)</h3>
-                <p>Get instant answers to any question with structured bullet points. Powered by OpenAI and Google Gemini APIs for comprehensive responses.</p>
+                <p>Get instant answers to any question with structured bullet points. Powered by Google Gemini for comprehensive responses.</p>
                 <strong>Endpoint:</strong> <code>POST /api/ask</code>
             </div>
 
@@ -203,6 +265,37 @@ def health_check():
     except Exception as e:
         logger.error(f"Error in health check: {str(e)}")
         return jsonify({"error": "Health check failed", "details": str(e)}), 500
+
+
+@app.route('/api/settings/api-keys', methods=['POST'])
+def update_api_keys():
+    """Persist API key settings and refresh AI modules."""
+    try:
+        data = request.get_json(silent=True) or {}
+
+        gemini_api_key = data.get('gemini_api_key')
+        pinecone_api_key = data.get('pinecone_api_key')
+
+        _set_env_value('GEMINI_API_KEY', gemini_api_key)
+        _set_env_value('PINECONE_API_KEY', pinecone_api_key)
+
+        _persist_env_file({
+            'GEMINI_API_KEY': gemini_api_key,
+            'PINECONE_API_KEY': pinecone_api_key,
+        })
+
+        initialize_ai_modules()
+
+        return jsonify({
+            "success": True,
+            "message": "API configuration saved successfully",
+            "gemini_configured": bool(Config.GEMINI_API_KEY),
+            "pinecone_configured": bool(Config.PINECONE_API_KEY)
+        })
+
+    except Exception as e:
+        logger.error(f"Error saving API settings: {str(e)}")
+        return jsonify({"success": False, "error": f"Failed to save API settings: {str(e)}"}), 500
 
 @app.route('/api/ask', methods=['POST'])
 def ask_question():

@@ -10,7 +10,6 @@ class Config:
     """Base configuration class"""
     
     # API Keys
-    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
     PINECONE_API_KEY = os.getenv('PINECONE_API_KEY')
     
@@ -19,8 +18,8 @@ class Config:
     FLASK_ENV = os.getenv('FLASK_ENV', 'development')
     
     # AI Model Configuration
-    DEFAULT_MODEL = 'gpt-3.5-turbo'
-    GEMINI_MODEL = 'gemini-pro'
+    DEFAULT_MODEL = 'gemini-3.1-flash-lite'
+    GEMINI_MODEL = 'gemini-3.1-flash-lite'
     MAX_TOKENS = 1000
     TEMPERATURE = 0.7
     
@@ -47,8 +46,6 @@ class Config:
         """Validate that required API keys are present"""
         missing_keys = []
         
-        if not cls.OPENAI_API_KEY:
-            missing_keys.append('OPENAI_API_KEY')
         if not cls.GEMINI_API_KEY:
             missing_keys.append('GEMINI_API_KEY')
             

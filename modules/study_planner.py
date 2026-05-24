@@ -142,10 +142,19 @@ class StudyPlanGenerator:
             # Determine primary subject for the day
             primary_subject = subjects_cycle[day - 1]
             
-            # Generate daily topics using AI
-            daily_topics = self._generate_daily_topics(
-                primary_subject, day, timeline, difficulty, goals
-            )
+            # Generate daily topics using AI sparingly to avoid long blocking calls
+            # Use AI for the first day and for weekly checkpoints; otherwise use fallback topics
+            try:
+                if self.qa_system and getattr(self.qa_system, 'gemini_available', False) and (day == 1 or day % 7 == 0):
+                    daily_topics = self._generate_daily_topics(
+                        primary_subject, day, timeline, difficulty, goals
+                    )
+                    if not daily_topics:
+                        daily_topics = self._get_fallback_topics(primary_subject, day, difficulty)
+                else:
+                    daily_topics = self._get_fallback_topics(primary_subject, day, difficulty)
+            except Exception:
+                daily_topics = self._get_fallback_topics(primary_subject, day, difficulty)
             
             # Distribute hours across activities
             activities = self._distribute_daily_activities(

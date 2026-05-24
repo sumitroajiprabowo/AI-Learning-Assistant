@@ -157,27 +157,63 @@ class QuizGenerator:
             context = f"Subject: {subject}"
             if topic:
                 context += f", Topic: {topic}"
-            
-            prompt = f"""
-            Generate a {difficulty} level multiple choice question for {subject}.
-            {f"Focus on the topic: {topic}" if topic else ""}
-            
-            Format your response exactly as follows:
-            Question: [Your question here]
-            A) [Option A]
-            B) [Option B] 
-            C) [Option C]
-            D) [Option D]
-            Correct Answer: [A, B, C, or D]
-            Explanation: [Brief explanation of why this is correct]
-            """
-            
-            response = self.qa_system.ask_question(prompt, context, provider="auto")
-            
-            if response['success']:
-                return self._parse_mcq_response(response['answer'], question_num, difficulty)
-            else:
-                return self._generate_fallback_question(subject, difficulty, question_num)
+            # For Gemini provider, request strictly-formatted JSON output to include correct answers
+            prompt = {
+                "instruction": (
+                    f"Generate a {difficulty} multiple choice question for {subject}. "
+                    f"If a topic is provided, focus on: {topic}. "
+                    "Return ONLY a valid JSON object with this exact schema: "
+                    "{\"question\": \"...\", \"options\": [\"...\", \"...\", \"...\", \"...\"], \"correct\": 0, \"explanation\": \"...\"}. "
+                    "Do not add markdown, bullet points, numbering, or extra text. "
+                    "The value of correct must be the zero-based index of the correct option."
+                )
+            }
+
+            # Use the QASystem to ask Gemini specifically
+            response = self.qa_system.ask_question(prompt, context, provider="gemini")
+
+            if response.get('success'):
+                # Expect response['answer'] to be JSON string or dict
+                ans = response.get('answer')
+                try:
+                    if isinstance(ans, str):
+                        parsed = json.loads(ans)
+                    elif isinstance(ans, dict):
+                        parsed = ans
+                    else:
+                        parsed = None
+                except Exception:
+                    parsed = None
+
+                if parsed and isinstance(parsed, dict):
+                    q_text = parsed.get('question') or parsed.get('question_text')
+                    options = parsed.get('options') or parsed.get('choices')
+                    correct = parsed.get('correct')
+                    explanation = parsed.get('explanation', '')
+
+                    if q_text and options and len(options) >= 2 and (isinstance(correct, int) or (isinstance(correct, str) and correct.isdigit())):
+                        # normalize correct to int
+                        correct_idx = int(correct)
+                        # ensure options length is at least 2; pad/truncate to 4
+                        options = list(options)[:4] + ([''] * max(0, 4 - len(options)))
+
+                        return {
+                            'id': f'q_{question_num}',
+                            'question_number': question_num,
+                            'question_text': q_text,
+                            'question_type': 'multiple_choice',
+                            'options': options,
+                            'correct_answer': correct_idx,
+                            'correct_letter': chr(ord('A') + correct_idx) if 0 <= correct_idx < 26 else 'A',
+                            'explanation': explanation or f'The correct answer is {chr(ord("A") + correct_idx)}',
+                            'difficulty': difficulty,
+                            'points': 1,
+                            'user_answer': None,
+                            'is_correct': None
+                        }
+
+            # Fallback to previous behavior if Gemini response invalid
+            return self._generate_fallback_question(subject, difficulty, question_num)
                 
         except Exception:
             return self._generate_fallback_question(subject, difficulty, question_num)
@@ -192,11 +228,14 @@ class QuizGenerator:
             correct_answer = ""
             explanation = ""
             
+            import re
             for line in lines:
                 if line.startswith('Question:') or line.startswith('• Question:'):
                     question_text = line.replace('Question:', '').replace('• Question:', '').strip()
-                elif line.startswith(('A)', 'B)', 'C)', 'D)', '• A)', '• B)', '• C)', '• D)')):
-                    option_text = line.replace('•', '').strip()
+                elif re.match(r'^[ABCD]\)|^•\s*[ABCD]\)', line):
+                    # Strip leading bullets and letter prefixes like 'A) ' or '• A) '
+                    option_text = re.sub(r'^•\s*', '', line).strip()
+                    option_text = re.sub(r'^[ABCD]\)\s*', '', option_text).strip()
                     options.append(option_text)
                 elif line.startswith('Correct Answer:') or line.startswith('• Correct Answer:'):
                     correct_answer = line.replace('Correct Answer:', '').replace('• Correct Answer:', '').strip()
@@ -306,17 +345,17 @@ class QuizGenerator:
         fallback_questions = {
             'easy': {
                 'question': f'What is a fundamental concept in {subject}?',
-                'options': ['A) Basic principle', 'B) Advanced theory', 'C) Complex algorithm', 'D) Expert knowledge'],
+                    'options': ['Basic principle', 'Advanced theory', 'Complex algorithm', 'Expert knowledge'],
                 'correct': 0
             },
             'medium': {
                 'question': f'Which approach is commonly used in {subject}?',
-                'options': ['A) Simple method', 'B) Standard approach', 'C) Complex procedure', 'D) Advanced technique'],
+                    'options': ['Simple method', 'Standard approach', 'Complex procedure', 'Advanced technique'],
                 'correct': 1
             },
             'hard': {
                 'question': f'What is an advanced technique in {subject}?',
-                'options': ['A) Basic concept', 'B) Simple rule', 'C) Complex algorithm', 'D) Elementary principle'],
+                    'options': ['Basic concept', 'Simple rule', 'Complex algorithm', 'Elementary principle'],
                 'correct': 2
             }
         }
