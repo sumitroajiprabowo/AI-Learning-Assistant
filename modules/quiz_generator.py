@@ -192,12 +192,20 @@ class QuizGenerator:
 
         if not q_text or not options or len(options) < 2:
             return None
-        if isinstance(correct, str) and correct.strip().isdigit():
+        if isinstance(correct, bool):
+            return None
+        if isinstance(correct, str):
+            c = correct.strip()
+            if not c:
+                return None
+            if c.isdigit():
+                correct_idx = int(c)
+            elif c[0].upper() in 'ABCD':
+                correct_idx = ord(c[0].upper()) - ord('A')
+            else:
+                return None
+        elif isinstance(correct, (int, float)):
             correct_idx = int(correct)
-        elif isinstance(correct, str) and correct.strip()[:1].upper() in 'ABCD':
-            correct_idx = ord(correct.strip()[0].upper()) - ord('A')
-        elif isinstance(correct, int):
-            correct_idx = correct
         else:
             return None
 
