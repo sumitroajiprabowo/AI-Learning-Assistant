@@ -18,6 +18,7 @@ class QuizGenerator:
     def __init__(self):
         self.qa_system = QASystem()
         self.quiz_store: Dict[str, Dict[str, Any]] = {}
+        self.last_ai_error: Optional[str] = None
         self.difficulty_weights = {
             'easy': {'basic': 0.7, 'intermediate': 0.3, 'advanced': 0.0},
             'medium': {'basic': 0.3, 'intermediate': 0.5, 'advanced': 0.2},
@@ -60,6 +61,7 @@ class QuizGenerator:
             # Generate quiz ID and metadata
             quiz_id = str(uuid.uuid4())
             created_date = datetime.now().isoformat()
+            self.last_ai_error = None
 
             # Generate questions: prefer single batched MCQ call (fast, reliable)
             questions: List[Dict[str, Any]] = []
@@ -114,10 +116,30 @@ class QuizGenerator:
 
             self.quiz_store[quiz_id] = quiz
 
+            # Detect how many questions are fallbacks (AI unavailable / failed)
+            fallback_count = sum(
+                1 for q in questions
+                if str(q.get('question_text', '')).startswith('[AI tidak tersedia]')
+            )
+            ai_warning = None
+            if fallback_count:
+                providers = self.qa_system.get_available_providers()
+                detail = self.last_ai_error or (
+                    'No AI provider configured' if not providers
+                    else 'AI did not return usable questions'
+                )
+                ai_warning = (
+                    f'{fallback_count}/{len(questions)} soal memakai template fallback '
+                    f'karena AI gagal: {detail}. Set GEMINI_API_KEY / OPENAI_API_KEY yang '
+                    f'valid lalu generate ulang.'
+                )
+
             return {
                 'success': True,
                 'quiz': quiz,
-                'error': None
+                'error': None,
+                'ai_warning': ai_warning,
+                'fallback_count': fallback_count
             }
             
         except Exception as e:
@@ -250,14 +272,16 @@ class QuizGenerator:
                 )
             }
 
-            response = self.qa_system.ask_question(prompt, context, provider="gemini")
+            response = self.qa_system.ask_question(prompt, context, provider="auto")
             if not response.get('success'):
+                self.last_ai_error = response.get('error') or 'AI provider returned no answer'
                 return []
 
             parsed = self._extract_json(response.get('answer'))
             if isinstance(parsed, dict):
                 parsed = parsed.get('questions') if isinstance(parsed.get('questions'), list) else [parsed]
             if not isinstance(parsed, list):
+                self.last_ai_error = 'AI response was not valid JSON'
                 return []
 
             questions: List[Dict] = []
@@ -270,7 +294,8 @@ class QuizGenerator:
 
             return questions
 
-        except Exception:
+        except Exception as e:
+            self.last_ai_error = f'Exception in batch generation: {e}'
             return []
 
     def _generate_mcq(self, subject: str, topic: str, difficulty: str, question_num: int) -> Dict:
@@ -291,8 +316,8 @@ class QuizGenerator:
                 )
             }
 
-            # Use the QASystem to ask Gemini specifically
-            response = self.qa_system.ask_question(prompt, context, provider="gemini")
+            # Gemini primary, OpenAI fallback when Gemini fails
+            response = self.qa_system.ask_question(prompt, context, provider="auto")
 
             if response.get('success'):
                 parsed = self._extract_json(response.get('answer'))
@@ -301,44 +326,59 @@ class QuizGenerator:
                 normalized = self._normalize_mcq(parsed, question_num, difficulty)
                 if normalized:
                     return normalized
+                self.last_ai_error = 'AI response could not be parsed into a valid MCQ'
+            else:
+                self.last_ai_error = response.get('error') or 'AI provider returned no answer'
 
-            # Fallback to template question if Gemini response invalid
             return self._generate_fallback_question(subject, difficulty, question_num)
 
-        except Exception:
+        except Exception as e:
+            self.last_ai_error = f'Exception in single question generation: {e}'
             return self._generate_fallback_question(subject, difficulty, question_num)
     
     def _generate_fallback_question(self, subject: str, difficulty: str, question_num: int) -> Dict:
-        """Generate fallback question when AI fails"""
-        fallback_questions = {
-            'easy': {
-                'question': f'What is a fundamental concept in {subject}?',
-                    'options': ['Basic principle', 'Advanced theory', 'Complex algorithm', 'Expert knowledge'],
-                'correct': 0
-            },
-            'medium': {
-                'question': f'Which approach is commonly used in {subject}?',
-                    'options': ['Simple method', 'Standard approach', 'Complex procedure', 'Advanced technique'],
-                'correct': 1
-            },
-            'hard': {
-                'question': f'What is an advanced technique in {subject}?',
-                    'options': ['Basic concept', 'Simple rule', 'Complex algorithm', 'Elementary principle'],
-                'correct': 2
-            }
-        }
-        
-        template = fallback_questions.get(difficulty, fallback_questions['medium'])
-        
+        """Generate a varied fallback question when AI is unavailable.
+
+        Penting: jangan menyamar sebagai soal AI yang berhasil. Teks soal
+        memuat penanda [AI tidak tersedia] dan bervariasi per question_num
+        (subjek, sudut pertanyaan, posisi jawaban benar berputar) supaya
+        user mudah mendeteksi bahwa AI gagal alih-alih melihat 10 soal
+        identik.
+        """
+        question_angles = [
+            f"konsep dasar dari {subject}",
+            f"karakteristik utama {subject}",
+            f"contoh penerapan {subject}",
+            f"komponen penting dalam {subject}",
+            f"tujuan mempelajari {subject}",
+            f"prinsip kunci pada {subject}",
+            f"manfaat memahami {subject}",
+            f"hubungan antar bagian dalam {subject}",
+        ]
+        option_pools = [
+            ['Konsep fundamental', 'Teori lanjutan', 'Metode kompleks', 'Pengetahuan ahli'],
+            ['Pendekatan sederhana', 'Cara standar', 'Prosedur kompleks', 'Teknik lanjutan'],
+            ['Definisi formal', 'Contoh praktis', 'Penjelasan singkat', 'Studi kasus'],
+            ['Tahap awal', 'Tahap menengah', 'Tahap lanjut', 'Tahap mahir'],
+        ]
+
+        angle = question_angles[(question_num - 1) % len(question_angles)]
+        options = list(option_pools[(question_num - 1) % len(option_pools)])
+        correct = (question_num - 1) % 4  # rotasi A B C D
+        text = f"[AI tidak tersedia] Pertanyaan {difficulty} #{question_num}: Manakah yang paling tepat menggambarkan {angle}?"
+
         return {
             'id': f'q_{question_num}',
             'question_number': question_num,
-            'question_text': template['question'],
+            'question_text': text,
             'question_type': 'multiple_choice',
-            'options': template['options'],
-            'correct_answer': template['correct'],
-            'correct_letter': chr(ord('A') + template['correct']),
-            'explanation': f'This is a {difficulty} level question about {subject}',
+            'options': options,
+            'correct_answer': correct,
+            'correct_letter': chr(ord('A') + correct),
+            'explanation': (
+                'Soal fallback karena panggilan AI gagal. Periksa GEMINI_API_KEY / OPENAI_API_KEY '
+                'lalu generate quiz ulang untuk mendapatkan soal yang sesungguhnya.'
+            ),
             'difficulty': difficulty,
             'points': 1,
             'user_answer': None,
