@@ -374,6 +374,8 @@ def render_quiz_generator():
                 quiz_data = response.json()
 
                 if quiz_data.get('success'):
+                    if quiz_data.get('ai_warning'):
+                        st.warning(f"⚠️ {quiz_data['ai_warning']}")
                     st.session_state.quiz_data = quiz_data
                     st.session_state.quiz_results = None
                     st.session_state.user_answers = {
@@ -399,6 +401,8 @@ def render_quiz_generator():
                 str(q['question_number']): None for q in quiz['questions']
             }
 
+        if active.get('ai_warning'):
+            st.warning(f"⚠️ {active['ai_warning']}")
         st.success("✅ Quiz ready! Pilih jawaban lalu klik Submit.")
         st.markdown(f"### 📝 Quiz: {quiz['metadata']['subject']}")
         if quiz['metadata'].get('topic'):
